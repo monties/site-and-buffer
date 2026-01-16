@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地點範圍搜尋工具</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dom-to-image/2.6.0/dom-to-image.min.js"></script>
+    
+    <style>
+        :root {
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --bg-color: #f0f2f5;
+        }
+        body { font-family: "Microsoft JhengHei", sans-serif; padding: 20px; background-color: var(--bg-color); display: flex; flex-direction: column; align-items: center; }
+        .app-container { width: 600px; }
+        .controls { background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ddd; box-sizing: border-box; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        #map-container { width: 600px; height: 600px; border: 3px solid #333; position: relative; background: white; overflow: hidden; }
+        #map { width: 100%; height: 100%; }
+        
+        /* 標籤樣式 */
+        .radius-label-box {
+            background: rgba(128, 128, 128, 0.1) !important; 
+            color: #0000FF !important; 
+            font-size: 8px !important;
+            font-weight: bold;
+            padding: 0px 2px;
+            border-radius: 2px;
+            transform: translate(-50%, 0); 
+            display: block;
+            white-space: nowrap;
+        }
+
+        .legend { position: absolute; bottom: 15px; right: 15px; background: rgba(255, 255, 255, 0.9); padding: 10px; border: 2px solid #333; border-radius: 5px; z-index: 1000; font-size: 12px; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
+        .color-box { width: 25px; height: 3px; margin-right: 8px; }
+        
+        .input-group { margin-bottom: 10px; display: flex; gap: 8px; }
+        input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; outline: none; }
+        input:focus { border-color: var(--primary-color); }
+        button { padding: 8px 12px; cursor: pointer; border-radius: 4px; border: none; font-weight: bold; transition: background 0.2s; }
+        .download-btn { background-color: var(--success-color); color: white; }
+        .add-btn { background-color: var(--primary-color); color: white; }
+        .clear-btn { background-color: var(--danger-color); color: white; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <h2 style="margin-top: 0;">地點範圍搜尋工具</h2>
+    <div class="controls">
+        <div class="input-group">
+            <input type="text" id="address" placeholder="輸入地址並按 Ctrl+Enter" style="flex-grow: 1;">
+            <button onclick="searchLocation()" style="background: #6c757d; color: white;">搜尋</button>
+            <button class="download-btn" onclick="downloadMap()">下載 PNG</button>
+        </div>
+        <div class="input-group">
+            <input type="number" id="customRadius" placeholder="半徑 (公尺)" style="width: 100px;">
+            <button class="add-btn" onclick="addCustomCircle()">新增自定義範圍</button>
+            <button class="clear-btn" onclick="clearCustomCircles()">清除</button>
+        </div>
+    </div>
+    <div id="map-container">
+        <div id="map"></div>
+        <div class="legend">
+            <div class="legend-item"><div class="color-box" style="background: #808080;"></div> 500m/ 1km/ 2km 半徑</div>
+            <div class="legend-item"><div class="color-box" style="background: #0000FF;"></div> 自定義半徑</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    window.L_DISABLE_3D = true;
+    let map, baseLayers = [], customLayers = [];
+    let currentCenter = [25.047, 121.517];
+
+    function initMap() {
+        map = L.map('map', { zoomControl: false }).setView(currentCenter, 8);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; CARTO',
+            crossOrigin: true 
+        }).addTo(map);
+
+        document.getElementById("address").addEventListener("keydown", (e) => {
+            if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); searchLocation(); }
+        });
+    }
+
+    async function searchLocation() {
+        const query = document.getElementById("address").value;
+        if (!query) return;
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+            if (data && data.length > 0) {
+                currentCenter = [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+                updateMap(currentCenter);
+            }
+        } catch (e) { console.error("搜尋錯誤:", e); }
+    }
+
+    function updateMap(center) {
+        [...baseLayers, ...customLayers].forEach(l => map.removeLayer(l));
+        baseLayers = []; customLayers = [];
+        const marker = L.circleMarker(center, { radius: 6, color: 'red', fillColor: 'red', fillOpacity: 1 }).addTo(map);
+        baseLayers.push(marker);
+        drawCircle(center, 500, '#808080', 1.0, true);
+        drawCircle(center, 1000, '#808080', 0.7, true);
+        drawCircle(center, 2000, '#808080', 0.5, true);
+        autoZoom();
+    }
+
+    function addCustomCircle() {
+        const radius = document.getElementById("customRadius").value;
+        if (!radius || radius <= 0) return;
+        drawCircle(currentCenter, parseInt(radius), '#0000FF', 1.0, false);
+        autoZoom();
+    }
+
+    function clearCustomCircles() {
+        customLayers.forEach(l => map.removeLayer(l));
+        customLayers = [];
+        autoZoom();
+    }
+
+    function drawCircle(center, radius, color, opacity, isBase) {
+        const circle = L.circle(center, { radius, color, weight: 3, opacity, fillOpacity: 0 }).addTo(map);
+        if (!isBase) {
+            const offsetLat = radius / 111320;
+            const labelMarker = L.marker([center[0] - offsetLat, center[1]], {
+                icon: L.divIcon({ className: '', html: `<div class="radius-label-box">${radius}m</div>`, iconSize: [0, 0] })
+            }).addTo(map);
+            customLayers.push(circle, labelMarker);
+        } else {
+            baseLayers.push(circle);
+        }
+    }
+
+    function autoZoom() {
+        const all = [...baseLayers, ...customLayers];
+        if (all.length > 0) map.fitBounds(new L.featureGroup(all).getBounds(), { padding: [60, 60] });
+    }
+
+    function getFormattedTimestamp() {
+        const n = new Date();
+        const f = (v) => String(v).padStart(2, '0');
+        return `${n.getFullYear()}${f(n.getMonth()+1)}${f(n.getDate())}${f(n.getHours())}${f(n.getMinutes())}${f(n.getSeconds())}`;
+    }
+
+    function downloadMap() {
+        const btn = document.querySelector('.download-btn');
+        btn.innerText = "生成中..."; btn.disabled = true;
+        domtoimage.toPng(document.getElementById('map-container'), { width: 600, height: 600 })
+        .then(dataUrl => {
+            const link = document.createElement('a');
+            link.download = `map_${getFormattedTimestamp()}.png`;
+            link.href = dataUrl; link.click();
+            btn.innerText = "下載 PNG"; btn.disabled = false;
+        }).catch(() => { btn.innerText = "下載 PNG"; btn.disabled = false; });
+    }
+    window.onload = initMap;
+</script>
+</body>
+</html>
